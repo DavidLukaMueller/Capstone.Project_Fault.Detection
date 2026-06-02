@@ -1,23 +1,23 @@
-# 🛠️ HVAC Fault Detection: Predictive Maintenance Capstone
+# HVAC Fault Detection: Predictive Maintenance Capstone
 
-## 📖 Introduction
+## Introduction
 Modern Heating, Ventilation, and Air Conditioning (HVAC) systems are highly complex networks of sensors, dampers, valves, and fans. When a component fails, it can waste significant energy or damage the system before human operators notice a problem. 
 
 This project aims to build a robust Machine Learning and Heuristics-based system to automatically detect and classify specific component failures in an Air Handling Unit (AHU) using time-series sensor data. 
 
-### ⚙️ System Schematic
+### System Schematic
 To understand the data, here is a simplified diagram of the HVAC system, showing the airflow, dampers, heating/cooling coils, and sensor placements:
 
 ![HVAC System Diagram](Images/Simplified_HVAC.png)
 
-### 📊 Dataset Overview
+### Dataset Overview
 The project utilizes two primary time-series datasets recorded at **1-minute intervals**:
 * **Train Set (`MZVAV-2-2.csv`):** 37,441 rows. Contains normal operation data and 3 artificial error types (Damper Stuck, Heating Coil Leak, Cooling Valve Stuck).
 * **Test Set (`MZVAV-2-1.csv`):** 21,601 rows. Contains normal operation data and 1 error type (Heating Coil Leak).
 
 **Target Variable Modification:** The original dataset featured a binary `Fault Detection Ground Truth` column (0 = Normal, 1 = Fault). To achieve component-level isolation, I engineered this into a multi-class column (0 = Normal, 1 = Damper, 2 = Cooling, 3 = Heating, etc.).
 
-#### ⚠️ Simulated Fault Structure
+#### Simulated Fault Structure
 To train the models effectively, the training dataset contains artificially induced faults of varying severities. The test set mirrors only the Heating Coil Leak fault to validate the model's ability to generalize.
 
 * **Error 1: Outdoor Air (OA) Damper Stuck**
@@ -50,7 +50,7 @@ The dataset consists of continuous analog signals and binary state indicators:
 
 ---
 
-## 🎯 Project Goal & Strategy
+## Project Goal & Strategy
 The objective is to ingest a full day's worth of data and generate a diagnostic report for maintenance teams, pinpointing the exact location of the failure.
 
 1. **Data Exploration:** Analyze sensor stability, system cycles, and identify heuristic baseline rules.
@@ -61,7 +61,7 @@ The objective is to ingest a full day's worth of data and generate a diagnostic 
 
 ---
 
-## 🔍 Phase 1: Data Exploration & Baseline Extraction
+## Phase 1: Data Exploration & Baseline Extraction
 Initial data exploration showed that the HVAC signals were generally stable, with a hard reset occurring at midnight. 
 
 To understand baseline operations, I generated correlation heatmaps split into four categories: All data, Only Non-Faulty, Non-Faulty Empty Building, and Non-Faulty Occupied Building.
@@ -72,7 +72,7 @@ To understand baseline operations, I generated correlation heatmaps split into f
 
 ---
 
-## 🧪 Phase 2: The Modeling Journey & Challenges
+## Phase 2: The Modeling Journey & Challenges
 
 My initial plan was to detect errors from easiest to hardest: Damper Position -> Cooling Valve Stuck -> Heating Coil Leak.
 
@@ -102,7 +102,7 @@ Translating complex R-based decision trees into Python row-by-row `if/else` stat
 
 ---
 
-## 🔄 Phase 3: The Breakthrough (Daily Aggregation & Heuristics)
+## Phase 3: The Breakthrough (Daily Aggregation & Heuristics)
 
 To solve the overfitting and translation issues, I made two major structural changes to the project:
 
@@ -116,7 +116,7 @@ To solve the overfitting and translation issues, I made two major structural cha
 
 ---
 
-## 📊 Final Results
+## Final Results
 
 The final hybrid system was tested on the combined dataset. While not every simulated fault could be perfectly replicated in the test environment, the system successfully identified faults with **zero false positives**.
 
@@ -140,14 +140,14 @@ The final hybrid system was tested on the combined dataset. While not every simu
 
 ---
 
-## 🧠 Lessons Learned
+## Lessons Learned
 * **Machine Learning Logic vs. Human Logic:** Intermediate faults (e.g., the 1.0 leak) can sometimes be harder for a model to detect than extreme ends of the spectrum.
 * **Tech Stack Consistency:** Translating trained models across languages (R to Python) manually is highly inefficient. Future ML workflows should be kept natively in Python end-to-end.
 * **Theory vs Reality:** Training data often has razor-thin boundaries between classes. Real-world data requires broader tolerances. Grouping data in daily chunks saved the project from sensor-glitch false positives.
 * **Organization:** Version control and strict folder organization are vital when experimenting with dozens of scripts, datasets, and iterations.
 * **Simplicity First:** Start with a humble, scalable foundation. Only introduce complexity when necessary.
 
-## 🚀 Future Improvements (Project Conclusion)
+## Future Improvements (Project Conclusion)
 The final system successfully acts as a "daily log parser" that tells maintenance teams exactly where to look for an error. 
 
 If I were to deploy this in production, I would split it into a **Two-Tier System**:
