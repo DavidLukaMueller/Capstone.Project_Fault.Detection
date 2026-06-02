@@ -1,3 +1,4 @@
+
 # HVAC Fault Detection: Predictive Maintenance Capstone
 
 ## Introduction
@@ -54,10 +55,10 @@ The dataset consists of continuous analog signals and binary state indicators:
 The objective is to ingest a full day's worth of data and generate a diagnostic report for maintenance teams, pinpointing the exact location of the failure.
 
 1. **Data Exploration:** Analyze sensor stability, system cycles, and identify heuristic baseline rules.
-2. **Feature Engineering:** Create custom ratio-based columns to capture system context rather than relying on raw temperatures.
+2. **Feature Engineering:** Calculate physical relationship metrics (e.g., Fan Effort Ratios, Heat/Cool mismatches) and smooth data with a 6-minute rolling average.
 3. **Model Training:** Train Decision Trees and Random Forests to detect individual, localized faults.
 4. **System Refinement:** Shift from row-by-row prediction to daily aggregation to eliminate noise and false positives.
-5. **Hybrid Architecture:** Combine Machine Learning (for complex leaks/stuck valves) with hard-coded logic (for direct sensor mismatches).
+5. **Hybrid Architecture:** Combine translated ML Trees with hard-coded logic for robust reporting.
 
 ---
 
@@ -79,15 +80,7 @@ My initial plan was to detect errors from easiest to hardest: Damper Position ->
 ### 1. Damper Stuck (Error 1)
 Using raw temperatures in a decision tree resulted in an overfitted model that only worked under highly specific weather conditions. To fix this, I used a Random Forest regression model to extract feature importance. 
 
-**Top Feature Importances:**
-| Feature | Importance (MeanDecreaseGini) |
-| :--- | :--- |
-| `AHU: Return Air Fan Speed Control Signal` | 2823.98 |
-| `AHU: Supply Air Fan Speed Control Signal` | 2101.82 |
-| `AHU: Supply Air Duct Static Pressure` | 1070.59 |
-| `AHU: Return Air Temperature` | 413.60 |
-
-*Insight:* Raw temps are less important than the **relationships** between systems. I engineered new ratio columns: *Fan Speed Difference, Pressure Error, and Mixed Air Temp (MAT) Error.* Training the tree with a custom loss matrix (penalizing false negatives heavily) resulted in a clean, robust decision tree for the damper.
+*Insight:* Raw temps are less important than the **relationships** between systems. I engineered new ratio columns: *Fan Speed Difference, Pressure Error, and Mixed Air Temp (MAT) Error.* Training the tree with a custom loss matrix resulted in a clean, robust decision tree.
 
 ![Damper Tree V1](Images/Damper_Tree.png)
 
@@ -95,28 +88,46 @@ Using raw temperatures in a decision tree resulted in an overfitted model that o
 The simple tree initially failed (268/3600 incorrect). Allowing the tree to expand showed heavy reliance on "Cooling Valve Efficiency." I engineered an additional contextual column: a time-based counter tracking how long the system had been continually active.
 
 ### 3. Heating Valve Leak (Error 3) - *The Trouble Child*
-Logically, a massive 2.0 GPM leak should be easiest to detect, and a 0.4 GPM leak the hardest. Surprisingly, the model struggled the most with the intermediate 1.0 GPM leak. 
-
-**The Pivot:**
-Translating complex R-based decision trees into Python row-by-row `if/else` statements became messy and resulted in combined model overlap (models conflicting with each other). Row-by-row analysis was simply too granular and susceptible to minor calibration glitches.
+Logically, a massive 2.0 GPM leak should be easiest to detect, and a 0.4 GPM leak the hardest. Surprisingly, the model struggled the most with the intermediate 1.0 GPM leak. Translating complex R-based decision trees into Python row-by-row `if/else` statements became messy and resulted in models conflicting with each other. Row-by-row analysis was simply too granular.
 
 ---
 
-## Phase 3: The Breakthrough (Daily Aggregation & Heuristics)
+## Phase 3: The Breakthrough (Daily Aggregation & Physics Rules)
 
-To solve the overfitting and translation issues, I made two major structural changes to the project:
+To solve the overfitting and translation issues, I made major structural changes:
 
-![Correlation Heatmap](Images/Coorelation_Tree_60minSkip_V2.png)
+1. **Daily Batch Processing & Smoothing:** Instead of row-by-row predictions, the system applies a **6-minute rolling average** to smooth sensor noise. It then waits **60 minutes** into the occupancy cycle to let the HVAC stabilize before aggregating the entire day's steady-state data (using 95th percentiles and means).
+2. **Implementation of Heuristics:** I added hard-coded checks for basic sensor failures (Fan Mismatches, Pressure bounds).
 
-1. **Daily Batch Processing:** Instead of predicting fault status row-by-row, the system now analyzes data in full-day chunks, ignoring the first 2 hours of the day to allow the HVAC system to stabilize. This vastly improved the model's confidence in classifying a "faulty day."
-2. **Implementation of Heuristics:** I implemented hard-coded logic for system failures that exhibit perfect mathematical breakdowns, removing the burden from the ML models.
-   * **Fan Hardware (Fault 4):** Fan Speed Command vs. Status (1.0 correlation normally). A mismatch mathematically guarantees mechanical/electrical failure.
-   * **Pressure Issues (Faults 5 & 6):** Duct Pressure vs. Fan Status. A breakdown here guarantees a physical delivery issue (broken belt, leak, or clogged filter).
-   * **Control Loop Failure (Faults 2 & 3):** If target temperatures are far off baseline, but the corresponding valve remains closed, the control loop has failed.
+### The Logic Behind the Trees (In Simple Terms)
+
+Once the data is daily-aggregated, the Machine Learning models translate into beautifully simple physical rules:
+
+#### **Damper Fault Logic**
+```text
+|--- Fan_Effort_Ratio_mean <= 1.05  --> FAULT
+|--- Fan_Effort_Ratio_mean > 1.05
+|   |--- Pressure_Error_mean > 1.13
+|   |   |--- MAT_Error_p95 <= 2.41  --> FAULT
+```
+* **What this means:** The `Fan_Effort_Ratio` checks how hard the fan is working compared to the pressure it generates. If the fan is spinning fast but pressure isn't building, the damper is stuck in the wrong position, leaking or blocking air. If the system manages to maintain perfect temperatures (`MAT_Error <= 2.41`) but has terrible pressure errors, it means the HVAC is brute-forcing the fans to mask the stuck damper.
+
+#### **Cooling Fault Logic**
+```text
+|--- Heating_Demand_Mismatch_p95 > 9.62      --> FAULT
+|--- Over_Cooling_Error_mean <= -15.68       --> FAULT
+```
+* **What this means (The Thermostat Fight):** If the heating valve is wide open, but the supply air is still freezing cold (`Heating_Demand_Mismatch`), the heater is actively fighting a cooling valve that is stuck open. Conversely, if the air is way too cold (`Over_Cooling_Error`), the cooler is stuck on. (A secondary rule was added for when the room is too hot, but the cooling valve refuses to open at all).
+
+#### **Heating Fault Logic**
+```text
+|--- Roll_Cool_Valve_mean > 0.49   --> FAULT
+```
+* **What this means:** If the cooling valve is forced to stay 50% open *on average for the entire day*, it's because it is secretly fighting a continuous hot-water leak from the broken heating coil just to keep the room at a normal temperature.
 
 ---
 
-## Final Results
+## 📊 Final Results
 
 The final hybrid system was tested on the combined dataset. While not every simulated fault could be perfectly replicated in the test environment, the system successfully identified faults with **zero false positives**.
 
@@ -151,5 +162,6 @@ The final hybrid system was tested on the combined dataset. While not every simu
 The final system successfully acts as a "daily log parser" that tells maintenance teams exactly where to look for an error. 
 
 If I were to deploy this in production, I would split it into a **Two-Tier System**:
-1. **Tier 1 (Critical - Rule-Based):** Hard-coded logic (valves, fan status) running on a rolling 30-minute window to immediately flag catastrophic mechanical failures.
+1. **Tier 1 (Critical - Rule-Based):** Hard-coded logic (valves, fan status, pressure loss) running on a rolling 30-minute window to immediately flag catastrophic mechanical failures.
 2. **Tier 2 (Non-Critical - ML Based):** Machine learning models (predicting slow leaks, damper sticks) running on a 24-hour delay. These faults don't cause immediate danger but waste energy, and analyzing them over a full day eliminates false positives.
+```
