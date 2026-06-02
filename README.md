@@ -164,4 +164,3 @@ The final system successfully acts as a "daily log parser" that tells maintenanc
 If I were to deploy this in production, I would split it into a **Two-Tier System**:
 1. **Tier 1 (Critical - Rule-Based):** Hard-coded logic (valves, fan status, pressure loss) running on a rolling 30-minute window to immediately flag catastrophic mechanical failures.
 2. **Tier 2 (Non-Critical - ML Based):** Machine learning models (predicting slow leaks, damper sticks) running on a 24-hour delay. These faults don't cause immediate danger but waste energy, and analyzing them over a full day eliminates false positives.
-```
