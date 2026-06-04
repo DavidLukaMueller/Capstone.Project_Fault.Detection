@@ -1,4 +1,3 @@
-
 # HVAC Fault Detection: Predictive Maintenance Capstone
 
 ## Introduction
@@ -36,7 +35,7 @@ To train the models effectively, the training dataset contains artificially indu
   * *1.0 GPM Leak:* 8/29/2007
   * *2.0 GPM Leak:* 8/30/2007
 
-### 🎛️ Sensor Variables & System Behavior
+### Sensor Variables & System Behavior
 The dataset consists of continuous analog signals and binary state indicators:
 * **Temperatures:** Supply Air, Set Point, Outdoor Air, Mixed Air, Return Air.
 * **Control Signals & Fan Speeds:** Supply/Return Fan Speed Control, Exhaust/Outdoor/Return Damper Control, Cooling/Heating Valve Control.
@@ -62,14 +61,16 @@ The objective is to ingest a full day's worth of data and generate a diagnostic 
 
 ---
 
-## Phase 1: Data Exploration & Baseline Extraction
-Initial data exploration showed that the HVAC signals were generally stable, with a hard reset occurring at midnight. 
+## Phase 1: Establishing a "Steady-State" Baseline & Heatmaps
+Initial data exploration showed that the HVAC signals reset every night. To understand true baseline operations, I needed to look at the system when it was completely stable. 
 
-To understand baseline operations, I generated correlation heatmaps split into four categories: All data, Only Non-Faulty, Non-Faulty Empty Building, and Non-Faulty Occupied Building.
+I generated a highly engineered correlation heatmap by doing two things:
+1. **Filtering out all simulated faults**, leaving only completely healthy data.
+2. **Skipping the first 60 minutes** of every occupancy shift (e.g., from 6:00 AM to 7:00 AM) to allow temperatures and fans to reach a steady state, completely removing startup noise.
 
 ![Correlation Heatmap Placeholder](Images/Coorelation_Tree_V1.png)
 
-**Key Finding:** The heatmaps revealed "hard rules" that never fault under normal conditions. This proved that certain faults don't need ML—they can be caught with strict logic rules based on perfect 1.0 correlations (e.g., Operating Mode vs. Supply/Return Fan Status).
+By doing this, I established absolute mathematical relationships. Because of this rigorous filtering, I knew that if a perfect 1.0 correlation broke in the future, it was definitively a mechanical fault, not just a system warming up or a sensor calibrating.
 
 ---
 
@@ -87,17 +88,54 @@ Using raw temperatures in a decision tree resulted in an overfitted model that o
 ### 2. Cooling Valve Stuck (Error 2)
 The simple tree initially failed (268/3600 incorrect). Allowing the tree to expand showed heavy reliance on "Cooling Valve Efficiency." I engineered an additional contextual column: a time-based counter tracking how long the system had been continually active.
 
-### 3. Heating Valve Leak (Error 3) - *The Trouble Child*
-Logically, a massive 2.0 GPM leak should be easiest to detect, and a 0.4 GPM leak the hardest. Surprisingly, the model struggled the most with the intermediate 1.0 GPM leak. Translating complex R-based decision trees into Python row-by-row `if/else` statements became messy and resulted in models conflicting with each other. Row-by-row analysis was simply too granular.
+### 3. Heating Valve Leak (Error 3) - The Trouble Child
+Logically, a massive 2.0 GPM leak should be easiest to detect, and a 0.4 GPM leak the hardest. Surprisingly, the model struggled the most with the intermediate 1.0 GPM leak. 
+
+### The Engineering Pivots: Why Plan A Failed
+My original plan (Plan A) was to train machine learning models to analyze the data row-by-row, minute-by-minute. 
+* **The Overfitting Issue:** Predicting faults on a 1-minute basis resulted in models that were far too sensitive. A 3-minute sensor calibration delay would trigger a false positive.
+* **The Translation Nightmare:** I originally trained complex Decision Trees in R. Attempting to translate precise R-based tree cutoff points into Python `if/else` statements for a row-by-row analysis was a workflow nightmare. Furthermore, when combining multiple fault models, their logic overlapped, causing the models to conflict with each other.
 
 ---
 
 ## Phase 3: The Breakthrough (Daily Aggregation & Physics Rules)
 
-To solve the overfitting and translation issues, I made major structural changes:
+**Plan B (The Final Architecture):** I abandoned the row-by-row approach. Instead, I shifted to a **Daily Aggregation Model**. By skipping the first 60 minutes of the day and aggregating the rest of the shift into a single summary row, the models could look at the *macro-behavior* of the day. This completely eliminated false positives caused by minute-by-minute noise.
 
-1. **Daily Batch Processing & Smoothing:** Instead of row-by-row predictions, the system applies a **6-minute rolling average** to smooth sensor noise. It then waits **60 minutes** into the occupancy cycle to let the HVAC stabilize before aggregating the entire day's steady-state data (using 95th percentiles and means).
-2. **Implementation of Heuristics:** I added hard-coded checks for basic sensor failures (Fan Mismatches, Pressure bounds).
+### Compressing the Day: Column Logic & Physics
+To summarize a 10-hour work shift into a single row, the script applies a `groupby("Occ_Block")` function on the steady-state data. The final "digested" dataset consists of 10 aggregated feature columns. These are divided into two categories: **Engineered Physics Metrics** and **Smoothed Sensor States**.
+
+**Category 1: Engineered Physics Metrics**
+Raw temperatures aren't always useful to a model, so I engineered contextual columns to measure system effort before aggregating them:
+* `Pressure_Error_mean`: *(Actual Static Pressure - Set Point)*. Measures if the system is failing to meet pressure requirements on average.
+* `Fan_Effort_Ratio_mean`: *(Static Pressure / Fan Speed)*. Measures how hard the fan has to spin to generate pressure. If the fan is at 100% but pressure is low, air is leaking or blocked.
+* `MAT_Error_p95`: *(Actual MAT - Ideal MAT)*. (Ideal MAT is calculated using Outdoor/Return temps and damper percentages). If this error is high at the 95th percentile, the damper is stuck and physically lying about its position.
+* `Over_Cooling_Error_mean`: *(Set Point - Supply Temp)*. Measures how far the air is overshooting the target coldness.
+* `Heating_Demand_Mismatch_p95`: *(Heating Valve % * (Set Point - Supply Temp))*. Calculates if the heater is working extremely hard to heat up air that is freezing cold, proving the heating and cooling systems are fighting each other.
+* `Fan_Mismatch_Error_mean`: A binary check comparing Fan Command vs Fan Status. Aggregated as a mean, it tells us the percentage of the day the hardware was disagreeing with the software.
+
+**Category 2: Smoothed Sensor States**
+I also passed through several smoothed raw sensors (using a 6-minute rolling average) and calculated their daily mean. These were necessary for the hard-coded Heuristic rules:
+* `Roll_Cool_Valve_mean`: The daily average % the cooling valve was open.
+* `Roll_Heat_Valve_mean`: The daily average % the heating valve was open.
+* `Roll_Supply_Temp_mean`: The daily average temperature of the air supplied to the rooms.
+* `Roll_Set_Point_mean`: The daily average target temperature.
+*(Logic: These four columns allow the script to ask simple questions like: "Is the supply temp way higher than the set point while the cooling valve is sitting at 0%?" -> Control Loop Failure).*
+
+**The Aggregation Logic (`mean` vs `p95`):**
+When collapsing these minute-by-minute calculations into a daily summary, I used `.mean()` to capture the *average state* of continuous signals (like valve positions). However, for error spikes (like Temperature Mismatches), I used `.quantile(0.95)` (the 95th percentile). This ensures that a single 1-minute anomaly is ignored, but a sustained error throughout the day is caught.
+
+### Hybrid Architecture: ML meets Heuristics
+The final Python code is not just a copy-paste of a Machine Learning Decision Tree; it is a hybrid system. 
+1. **Machine Learning Logic (The Hidden Faults):** For complex problems—like determining exactly *when* a damper is stuck or predicting a slow 1.0 GPM hot-water leak—I used the thresholds generated by the ML Decision Trees. The models found the perfect ratios (e.g., Fan Effort vs Pressure) that indicate a fault.
+2. **Custom Heuristics (The Mechanical Faults):** For direct mechanical failures, I didn't need ML. I wrote custom `if/elif` rules derived directly from the steady-state correlation heatmap. For example, Fan Command and Fan Status must have a 1.0 correlation. If they don't, it is a guaranteed hardware fault (Fault 4).
+
+### Why the System is Robust to Glitches (Margin of Error)
+In real-world HVAC systems, sensors drift and hardware lags. If an error threshold is based on a razor-thin margin (e.g., 0.001 degrees), the system will fail in production. This architecture ensures a massive safety buffer in three ways:
+
+1. **Time Tolerance via Percentiles:** By using `MAT_Error_p95` instead of `MAT_Error_max`, the system requires an error to be sustained for at least 5% of the day (roughly 30 minutes) before the threshold can be triggered. 
+2. **Wide ML Thresholds:** The model learned wide, definitive boundaries. For example, the `Heating_Demand_Mismatch` threshold is `> 9.62`. This isn't a tiny calibration glitch; a value of 9.62 means the system is drastically and continuously fighting itself.
+3. **Hardware Forgiveness:** The Fan Mismatch rule requires the `Fan_Mismatch_Error_mean` to be `> 0.1`. Because this is a daily average of binary states (0 or 1), the command and status must disagree for **more than 10% of the entire day** to trigger a fault. A 5-minute delay while the fan spins up will never trigger a false alarm.
 
 ### The Logic Behind the Trees (In Simple Terms)
 
@@ -127,7 +165,7 @@ Once the data is daily-aggregated, the Machine Learning models translate into be
 
 ---
 
-## 📊 Final Results
+## Final Results
 
 The final hybrid system was tested on the combined dataset. While not every simulated fault could be perfectly replicated in the test environment, the system successfully identified faults with **zero false positives**.
 
