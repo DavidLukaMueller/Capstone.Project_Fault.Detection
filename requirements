@@ -1,0 +1,7 @@
+Python version used: 3.12
+
+Required packages: Pandas, scikit-learn
+
+Command downloads:
+pip install pandas
+pip install scikit-learn
